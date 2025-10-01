@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JobYaari AI Agent</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🤖 JobYaari AI Social Media Agent</h1>
+            <p>Automated workflow for job trend analysis and content generation</p>
+        </header>
+
+        <div class="dashboard">
+            <div class="control-panel">
+                <button class="btn btn-primary" onclick="runAgent()">
+                    🚀 Run AI Agent
+                </button>
+                <button class="btn btn-secondary" onclick="getTrends()">
+                    📊 View Generated Content
+                </button>
+                <button class="btn btn-info" onclick="clearResults()">
+                    🗑️ Clear Results
+                </button>
+            </div>
+
+            <div class="stats-panel">
+                <div class="stat-card">
+                    <h3>Total Trends</h3>
+                    <span id="totalTrends">0</span>
+                </div>
+                <div class="stat-card">
+                    <h3>Pending Review</h3>
+                    <span id="pendingTrends">0</span>
+                </div>
+                <div class="stat-card">
+                    <h3>Approved</h3>
+                    <span id="approvedTrends">0</span>
+                </div>
+            </div>
+
+            <div id="results" class="results-container"></div>
+            <div id="trendsList" class="trends-container"></div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
