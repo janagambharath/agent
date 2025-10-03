@@ -1,13 +1,20 @@
 from openai import OpenAI
 import os
 from config import Config
+import re
 
 class ContentGenerator:
+    """GPT-2 Agent: Generates social media content using DeepSeek R1"""
+    
     def __init__(self):
-        if not Config.OPENAI_API_KEY:
-            raise ValueError("OpenAI API key is not configured")
+        if not Config.OPENROUTER_API_KEY:
+            raise ValueError("OPENROUTER_API_KEY is not configured")
         
-        self.client = OpenAI(api_key=Config.OPENAI_API_KEY)
+        self.client = OpenAI(
+            api_key=Config.OPENROUTER_API_KEY,
+            base_url=Config.OPENROUTER_BASE_URL
+        )
+        print(f"✅ Content Generator initialized with model: {Config.AI_MODEL}")
     
     def generate_content(self, trend, category):
         """Generate social media content using AI (GPT-2 Agent)"""
@@ -20,14 +27,22 @@ class ContentGenerator:
             response = self.client.chat.completions.create(
                 model=Config.AI_MODEL,
                 messages=[
-                    {"role": "system", "content": "You are a social media content creator for JobYaari, specializing in Indian government job updates."},
+                    {"role": "system", "content": "You are a social media content creator for JobYaari, specializing in Indian government job updates. Create engaging, actionable content."},
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=Config.MAX_TOKENS,
-                temperature=Config.TEMPERATURE
+                temperature=Config.TEMPERATURE,
+                extra_headers={
+                    "HTTP-Referer": Config.APP_URL,
+                    "X-Title": Config.APP_NAME
+                }
             )
             
             content_text = response.choices[0].message.content
+            
+            # Clean DeepSeek's thinking process
+            content_text = self._clean_deepseek_response(content_text)
+            
             parsed_content = self.parse_content(content_text)
             
             # Validate parsed content
@@ -41,28 +56,59 @@ class ContentGenerator:
             print(f"❌ Content generation error for '{trend[:50]}...': {e}")
             return self.get_fallback_content(trend, category)
     
+    def _clean_deepseek_response(self, response):
+        """Remove DeepSeek R1's thinking tags"""
+        response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
+        return response.strip()
+    
     def _build_content_prompt(self, trend, category):
-        """Build the content generation prompt"""
-        return f"""Create engaging social media content for this Indian government job update.
+        """Build the content generation prompt - Optimized for DeepSeek R1"""
+        # Add links based on category
+        link_placeholder = self._get_link_placeholder(category)
+        
+        return f"""Create social media content for this Indian government job update.
 
 TREND: {trend}
 CATEGORY: {category}
 
-Generate content in this EXACT format with clear labels:
+Generate content with these sections (use EXACT labels):
 
 INSTAGRAM_POST:
-[Create a 2-3 line Instagram caption with emojis and 3-5 hashtags. Make it engaging for Indian job seekers aged 18-30. Include urgency if applicable.]
+Write 2-3 lines with emojis and 3-5 hashtags. Make it urgent and engaging for 18-30 year olds.
 
 BLOG_DRAFT:
-[Write a 120-150 word blog post with: Opening hook, key details (dates/eligibility/links), benefits, and call-to-action. Use short paragraphs.]
+Write 120-150 words with:
+- Opening hook
+- Key details (dates, eligibility, {link_placeholder})
+- Benefits
+- Call-to-action
+Use short paragraphs.
 
 YOUTUBE_SCRIPT:
-[Create a 30-second script with: Hook (5 sec), Main content (20 sec), Call-to-action (5 sec). Include visual cues in brackets.]
+30-second script:
+- Hook (5 sec)
+- Main content (20 sec)  
+- Call-to-action (5 sec)
+Include visual cues in [brackets]
 
 THUMBNAIL_IDEA:
-[Describe a eye-catching YouTube thumbnail: Main text, background color, visual elements, text placement. Keep it bold and readable.]
+Describe eye-catching thumbnail:
+- Main text (what to write)
+- Background color
+- Visual elements
+- Text placement
 
-Use simple Hindi-English mix where appropriate. Make content shareable and actionable."""
+Use Hindi-English mix where appropriate. Keep all content shareable and actionable."""
+    
+    def _get_link_placeholder(self, category):
+        """Get appropriate link placeholder based on category"""
+        if category == "Admit Card":
+            return "admit card download link"
+        elif category == "Job Notification":
+            return "application link"
+        elif category == "Result":
+            return "result link"
+        return "official link"
     
     def parse_content(self, content_text):
         """Parse the structured AI response"""
@@ -89,7 +135,7 @@ Use simple Hindi-English mix where appropriate. Make content shareable and actio
             # Check if line starts a new section
             section_found = False
             for section_header, section_key in sections.items():
-                if line_stripped.startswith(section_header):
+                if line_stripped.upper().startswith(section_header.upper()):
                     current_section = section_key
                     # Get content after the header
                     content_after_header = line_stripped[len(section_header):].strip()
@@ -101,7 +147,7 @@ Use simple Hindi-English mix where appropriate. Make content shareable and actio
             # If not a section header and we're in a section, add to current section
             if not section_found and current_section and line_stripped:
                 # Skip separator lines
-                if line_stripped.startswith('---') or line_stripped.startswith('==='):
+                if line_stripped.startswith('---') or line_stripped.startswith('===') or line_stripped.startswith('***'):
                     continue
                 # Append to current section
                 if content[current_section]:
@@ -121,53 +167,66 @@ Use simple Hindi-English mix where appropriate. Make content shareable and actio
     def get_fallback_content(self, trend, category):
         """Fallback content if AI fails"""
         hashtags_map = {
-            "Admit Card": "#AdmitCard #HallTicket #ExamUpdate #JobYaari",
-            "Job Notification": "#JobAlert #GovernmentJobs #Vacancy #Recruitment",
-            "Result": "#Result #MeritList #ExamResult #JobYaari"
+            "Admit Card": "#AdmitCard #HallTicket #ExamUpdate #JobYaari #SarkariExam",
+            "Job Notification": "#JobAlert #GovernmentJobs #Vacancy #Recruitment #JobYaari",
+            "Result": "#Result #MeritList #ExamResult #JobYaari #SarkariResult"
+        }
+        
+        link_map = {
+            "Admit Card": "Download Admit Card: [Official Link]",
+            "Job Notification": "Apply Online: [Official Link]",
+            "Result": "Check Result: [Official Link]"
         }
         
         hashtags = hashtags_map.get(category, "#GovernmentJobs #JobUpdate #JobYaari")
+        link_text = link_map.get(category, "Visit: [Official Link]")
         
         return {
-            'instagram': f"🎯 {trend}\n\nImportant update for government job aspirants! 📝\nCheck official website for complete details.\n\n{hashtags} 🔥",
+            'instagram': f"🎯 {trend}\n\nImportant update for government job aspirants! 📝\n{link_text}\n\n{hashtags} 🔥",
             
-            'blog': f"""Latest Update: {trend}
+            'blog': f"""📢 Latest Update: {trend}
 
 This is an important development for job seekers across India. {category} notifications are crucial for candidates preparing for government sector careers.
 
-Key Points:
+🔑 Key Points:
 • Important update for aspirants
-• Check official notification for eligibility
-• Visit official website for application process
+• Check official notification for eligibility criteria
+• {link_text}
 • Don't miss important deadlines
 
-Stay updated with JobYaari for more government job notifications and exam updates!""",
-            
-            'youtube': f"""[Opening Hook]
-🔔 Big news for government job seekers!
+Stay updated with JobYaari for more government job notifications and exam updates! 🚀
 
-[Main Content]
+{link_text}""",
+            
+            'youtube': f"""[OPENING - 0:00-0:05]
+🔔 Big breaking news for government job seekers!
+
+[MAIN CONTENT - 0:05-0:25]
 {trend}
 
-[Details]
-Check the official notification for:
-- Eligibility criteria
-- Application process
-- Important dates
+📋 Important Details:
+- Check eligibility criteria
+- {link_text}
+- Note all important dates
 
-[Call-to-Action]
+[CALL TO ACTION - 0:25-0:30]
 👍 Like, Share & Subscribe for daily job updates!
-Visit JobYaari.com for more details.""",
+Visit JobYaari.com for complete details!""",
             
-            'thumbnail': f"""Bold yellow background with red accent border. 
+            'thumbnail': f"""🎨 THUMBNAIL DESIGN:
 
-Main text (White, bold): "{category.upper()}"
-Subtitle (Black): First 4-5 words of trend
+Background: Bold YELLOW with RED accent border
 
-Visual elements: 
-- Government building silhouette
-- Red "NEW" badge in top-right corner
-- Professional look suitable for Indian audience"""
+Main Text (White, Bold, 72pt): "{category.upper()}"
+Subtitle (Black, 48pt): {trend[:30]}...
+
+Visual Elements:
+- Government building silhouette (bottom)
+- Red "NEW" badge (top-right corner)
+- Urgency indicator: Clock icon
+- Professional, clean design for Indian audience
+
+Layout: Center-aligned with strong contrast"""
         }
     
     def validate_content(self, content):
@@ -182,5 +241,8 @@ Visual elements:
         
         if not content['youtube'] or len(content['youtube']) < 30:
             issues.append("YouTube script too short")
+        
+        if not content['thumbnail']:
+            issues.append("Thumbnail idea missing")
         
         return len(issues) == 0, issues
