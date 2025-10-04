@@ -6,6 +6,7 @@ from utils.sheets_manager import GoogleSheetsManager
 from config import Config
 import os
 import traceback
+import time
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -16,11 +17,18 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = Config.SECRET_KEY
 
 # Validate configuration
-config_errors = Config.validate()
+config_errors, config_warnings = Config.validate()
 if config_errors:
-    print("⚠️ Configuration warnings:")
+    print("❌ Configuration errors:")
     for error in config_errors:
         print(f"  - {error}")
+    print("\n⚠️ Please fix errors in .env file before continuing")
+    exit(1)
+
+if config_warnings:
+    print("⚠️ Configuration warnings:")
+    for warning in config_warnings:
+        print(f"  - {warning}")
 
 # Initialize components with error handling
 try:
@@ -35,7 +43,7 @@ try:
     print("✅ AI Categorizer initialized")
 except Exception as e:
     print(f"❌ AI Categorizer initialization failed: {e}")
-    print("   Make sure OPENAI_API_KEY is set in .env file")
+    print("   Make sure OPENROUTER_API_KEY is set in .env file")
     categorizer = None
 
 try:
@@ -67,49 +75,88 @@ def health():
             'categorizer': categorizer is not None,
             'content_generator': content_generator is not None,
             'sheets_manager': sheets_manager is not None
-        }
+        },
+        'model': Config.AI_MODEL
     })
 
 @app.route('/run-agent', methods=['POST'])
 def run_ai_agent():
-    """Complete AI Agent Workflow"""
+    """Complete AI Agent Workflow with Rate Limit Handling"""
     try:
         # Validate components
         if not all([scraper, categorizer, content_generator, sheets_manager]):
+            missing = []
+            if not scraper: missing.append('Scraper')
+            if not categorizer: missing.append('Categorizer')
+            if not content_generator: missing.append('Content Generator')
+            if not sheets_manager: missing.append('Sheets Manager')
+            
             return jsonify({
                 'success': False,
-                'error': 'One or more AI components failed to initialize. Check server logs.'
+                'error': f'Components not initialized: {", ".join(missing)}. Check server logs.'
             }), 500
         
-        print("\n🤖 Starting AI Agent Workflow...")
+        print("\n" + "="*60)
+        print("🤖 Starting AI Agent Workflow...")
+        print("="*60)
         
         # Phase 1: Data Extraction
-        print("📊 Phase 1: Scraping trends...")
+        print("\n📊 Phase 1: Data Extraction")
+        print("-" * 40)
         trends = scraper.get_job_trends()
-        print(f"   Found {len(trends)} trends")
+        print(f"✅ Found {len(trends)} trends")
         
         results = []
         processed_count = 0
         relevant_count = 0
+        skipped_count = 0
+        error_count = 0
         
-        # Process first 5 trends (to avoid rate limits)
-        for idx, trend in enumerate(trends[:5], 1):
+        # Process only 3 trends at a time to avoid rate limits (optimized for free tier)
+        BATCH_SIZE = 3
+        trends_to_process = trends[:BATCH_SIZE]
+        
+        print(f"\n⚙️ Processing {len(trends_to_process)} trends (batch size: {BATCH_SIZE})")
+        print("-" * 40)
+        
+        for idx, trend in enumerate(trends_to_process, 1):
             try:
-                print(f"\n🔄 Processing {idx}/5: {trend[:50]}...")
+                print(f"\n{'='*60}")
+                print(f"🔄 Item {idx}/{len(trends_to_process)}: {trend[:60]}...")
+                print(f"{'='*60}")
                 
-                # Phase 2: Categorization
-                print("   🏷️ Categorizing...")
+                # Phase 2: Categorization (GPT-1 Agent)
+                print("\n🏷️ Phase 2: AI Categorization (GPT-1 Agent)")
+                print("-" * 40)
+                
                 category = categorizer.categorize(trend)
-                print(f"   Category: {category}")
+                
+                print(f"✅ Category: {category}")
                 
                 if category != "Not Relevant":
                     relevant_count += 1
                     
-                    # Phase 3: Content Generation
-                    print("   ✍️ Generating content...")
+                    # Small delay to avoid rate limits (important for free tier)
+                    if idx < len(trends_to_process):
+                        time.sleep(1)  # 1 second delay between items
+                    
+                    # Phase 3: Content Generation (GPT-2 Agent)
+                    print("\n✍️ Phase 3: Content Generation (GPT-2 Agent)")
+                    print("-" * 40)
+                    
                     content = content_generator.generate_content(trend, category)
                     
+                    # Validate content
+                    is_valid, issues = content_generator.validate_content(content)
+                    if not is_valid:
+                        print(f"⚠️ Content validation issues: {', '.join(issues)}")
+                    else:
+                        print("✅ Content generated and validated")
+                    
                     # Phase 4: Update Storage
+                    print("\n💾 Phase 4: Saving to Storage")
+                    print("-" * 40)
+                    
                     sheet_data = {
                         'trend': trend,
                         'category': category,
@@ -122,37 +169,50 @@ def run_ai_agent():
                     
                     if sheets_manager.add_row(sheet_data):
                         results.append(sheet_data)
-                        print(f"   ✅ Saved successfully")
+                        print(f"✅ Saved to storage successfully")
                     else:
-                        print(f"   ⚠️ Failed to save")
+                        print(f"⚠️ Failed to save (might be duplicate)")
+                        error_count += 1
                 else:
-                    print(f"   ⏭️ Skipped (not relevant)")
+                    print(f"⏭️ Skipped: Not relevant to job trends")
+                    skipped_count += 1
                 
                 processed_count += 1
                 
             except Exception as e:
-                print(f"   ❌ Error processing trend: {e}")
+                print(f"\n❌ Error processing trend: {e}")
                 traceback.print_exc()
+                error_count += 1
                 continue
         
-        print(f"\n✅ Workflow complete!")
-        print(f"   Processed: {processed_count}/5")
-        print(f"   Relevant: {relevant_count}")
-        print(f"   Saved: {len(results)}")
+        # Summary
+        print("\n" + "="*60)
+        print("✅ WORKFLOW COMPLETE!")
+        print("="*60)
+        print(f"📊 Summary:")
+        print(f"   • Total Processed: {processed_count}/{len(trends_to_process)}")
+        print(f"   • Relevant Items: {relevant_count}")
+        print(f"   • Skipped (Not Relevant): {skipped_count}")
+        print(f"   • Errors: {error_count}")
+        print(f"   • Successfully Saved: {len(results)}")
+        print("="*60 + "\n")
         
         return jsonify({
             'success': True,
-            'message': f'AI Agent processed {relevant_count} relevant job trends',
+            'message': f'AI Agent processed {relevant_count} relevant job trends successfully!',
             'stats': {
                 'processed': processed_count,
                 'relevant': relevant_count,
-                'saved': len(results)
+                'skipped': skipped_count,
+                'errors': error_count,
+                'saved': len(results),
+                'batch_size': BATCH_SIZE
             },
             'results': results
         })
     
     except Exception as e:
-        print(f"❌ Workflow error: {e}")
+        print(f"\n❌ Workflow error: {e}")
         traceback.print_exc()
         return jsonify({
             'success': False,
@@ -170,11 +230,13 @@ def get_trends():
             }), 500
         
         trends = sheets_manager.get_all_data()
+        
         return jsonify({
             'success': True,
             'data': trends,
             'count': len(trends)
         })
+        
     except Exception as e:
         print(f"❌ Error fetching trends: {e}")
         return jsonify({
@@ -214,6 +276,7 @@ def update_status():
         success = sheets_manager.update_status(trend, new_status)
         
         if success:
+            print(f"✅ Status updated: {trend[:50]}... → {new_status}")
             return jsonify({
                 'success': True,
                 'message': f'Status updated to {new_status}'
@@ -236,7 +299,10 @@ def get_stats():
     """Get statistics"""
     try:
         if not sheets_manager:
-            return jsonify({'success': False, 'error': 'Sheets manager not initialized'}), 500
+            return jsonify({
+                'success': False, 
+                'error': 'Sheets manager not initialized'
+            }), 500
         
         all_data = sheets_manager.get_all_data()
         
@@ -253,28 +319,73 @@ def get_stats():
             category = item.get('category', 'Unknown')
             stats['by_category'][category] = stats['by_category'].get(category, 0) + 1
         
-        return jsonify({'success': True, 'stats': stats})
+        return jsonify({
+            'success': True, 
+            'stats': stats
+        })
         
     except Exception as e:
         print(f"❌ Error getting stats: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({
+            'success': False, 
+            'error': str(e)
+        }), 500
+
+@app.route('/clear-data', methods=['POST'])
+def clear_data():
+    """Clear all data (use with caution)"""
+    try:
+        if not sheets_manager:
+            return jsonify({
+                'success': False,
+                'error': 'Sheets manager not initialized'
+            }), 500
+        
+        # This would need to be implemented in sheets_manager
+        # For now, just return info
+        return jsonify({
+            'success': True,
+            'message': 'Clear data endpoint - to be implemented'
+        })
+        
+    except Exception as e:
+        print(f"❌ Error clearing data: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 @app.errorhandler(404)
 def not_found(e):
-    return jsonify({'success': False, 'error': 'Endpoint not found'}), 404
+    return jsonify({
+        'success': False, 
+        'error': 'Endpoint not found'
+    }), 404
 
 @app.errorhandler(500)
 def server_error(e):
-    return jsonify({'success': False, 'error': 'Internal server error'}), 500
+    return jsonify({
+        'success': False, 
+        'error': 'Internal server error'
+    }), 500
 
 if __name__ == '__main__':
-    print("\n" + "="*50)
-    print("🚀 JobYaari AI Agent Starting...")
-    print("="*50)
-    print(f"Environment: {'Production' if Config.is_production() else 'Development'}")
-    print(f"Port: {Config.PORT}")
-    print(f"Debug: {Config.DEBUG}")
-    print("="*50 + "\n")
+    print("\n" + "="*70)
+    print(" " * 20 + "🚀 JobYaari AI Agent")
+    print("="*70)
+    print(f"📌 Environment: {'Production' if Config.is_production() else 'Development'}")
+    print(f"🤖 AI Model: {Config.AI_MODEL}")
+    print(f"🌐 Port: {Config.PORT}")
+    print(f"🔧 Debug Mode: {Config.DEBUG}")
+    print(f"📊 Max Tokens: {Config.MAX_TOKENS}")
+    print(f"🌡️ Temperature: {Config.TEMPERATURE}")
+    print("="*70)
+    print("\n💡 Tips for Free Tier:")
+    print("   • Processing 3 items per batch (optimized for rate limits)")
+    print("   • Automatic retry on rate limit errors")
+    print("   • 1-second delay between API calls")
+    print("\n🔗 Access the dashboard at: http://localhost:5000")
+    print("="*70 + "\n")
     
     app.run(
         debug=Config.DEBUG,

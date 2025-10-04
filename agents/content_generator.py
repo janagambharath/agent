@@ -2,6 +2,7 @@ from openai import OpenAI
 import os
 from config import Config
 import re
+import time
 
 class ContentGenerator:
     """GPT-2 Agent: Generates social media content using DeepSeek R1"""
@@ -17,44 +18,63 @@ class ContentGenerator:
         print(f"✅ Content Generator initialized with model: {Config.AI_MODEL}")
     
     def generate_content(self, trend, category):
-        """Generate social media content using AI (GPT-2 Agent)"""
+        """Generate social media content using AI (GPT-2 Agent) with retry logic"""
         if not trend or category == "Not Relevant":
             return self.get_fallback_content(trend, category)
         
-        try:
-            prompt = self._build_content_prompt(trend, category)
-            
-            response = self.client.chat.completions.create(
-                model=Config.AI_MODEL,
-                messages=[
-                    {"role": "system", "content": "You are a social media content creator for JobYaari, specializing in Indian government job updates. Create engaging, actionable content."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=Config.MAX_TOKENS,
-                temperature=Config.TEMPERATURE,
-                extra_headers={
-                    "HTTP-Referer": Config.APP_URL,
-                    "X-Title": Config.APP_NAME
-                }
-            )
-            
-            content_text = response.choices[0].message.content
-            
-            # Clean DeepSeek's thinking process
-            content_text = self._clean_deepseek_response(content_text)
-            
-            parsed_content = self.parse_content(content_text)
-            
-            # Validate parsed content
-            if not any(parsed_content.values()):
-                print(f"⚠️ Empty content generated, using fallback for: {trend[:50]}...")
-                return self.get_fallback_content(trend, category)
-            
-            return parsed_content
-            
-        except Exception as e:
-            print(f"❌ Content generation error for '{trend[:50]}...': {e}")
-            return self.get_fallback_content(trend, category)
+        max_retries = 3
+        base_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                prompt = self._build_content_prompt(trend, category)
+                
+                response = self.client.chat.completions.create(
+                    model=Config.AI_MODEL,
+                    messages=[
+                        {"role": "system", "content": "You are a social media content creator for JobYaari, specializing in Indian government job updates. Create engaging, actionable content."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=Config.MAX_TOKENS,
+                    temperature=Config.TEMPERATURE,
+                    extra_headers={
+                        "HTTP-Referer": Config.APP_URL,
+                        "X-Title": Config.APP_NAME
+                    }
+                )
+                
+                content_text = response.choices[0].message.content
+                
+                # Clean DeepSeek's thinking process
+                content_text = self._clean_deepseek_response(content_text)
+                
+                parsed_content = self.parse_content(content_text)
+                
+                # Validate parsed content
+                if not any(parsed_content.values()):
+                    print(f"   ⚠️ Empty content generated, using fallback")
+                    return self.get_fallback_content(trend, category)
+                
+                return parsed_content
+                
+            except Exception as e:
+                error_str = str(e)
+                
+                # Check if it's a rate limit error
+                if "429" in error_str or "rate" in error_str.lower():
+                    if attempt < max_retries - 1:
+                        wait_time = base_delay * (2 ** attempt)
+                        print(f"   ⏳ Rate limited, waiting {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        print(f"   ❌ Rate limit exceeded, using fallback content")
+                        return self.get_fallback_content(trend, category)
+                else:
+                    print(f"   ❌ Content generation error: {e}")
+                    return self.get_fallback_content(trend, category)
+        
+        return self.get_fallback_content(trend, category)
     
     def _clean_deepseek_response(self, response):
         """Remove DeepSeek R1's thinking tags"""
